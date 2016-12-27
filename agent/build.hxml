@@ -1,0 +1,7 @@
+-cpp bin
+-cp src
+-main rtop.Agent
+-debug
+
+-lib mcli
+-lib geotools
