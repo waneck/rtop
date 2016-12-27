@@ -10,7 +10,7 @@ package rtop.utils;
 class Watcher {
 
   var fd:Int;
-  var wds:Map<Int, WatchFlags->String->Void>;
+  var wds:Map<Int, WatchFlags->String->Int->Void>;
 
   public function new() {
 
@@ -19,7 +19,7 @@ class Watcher {
     this.wds = new Map();
   }
 
-  public function add(path:String, flags:WatchFlags, cb:WatchFlags->String->Void):Int {
+  public function add(path:String, flags:WatchFlags, cb:WatchFlags->String->Int->Void):Int {
     if (this.fd <= 0) {
       throw 'Watcher is closed';
     }
@@ -71,10 +71,11 @@ class Watcher {
       var flags = inotifyToFlags(untyped __cpp__('event->mask'));
       var name = ( untyped __cpp__('event->name') : cpp.ConstCharStar ).toString();
       var wd = untyped __cpp__('event->wd');
+      var cookie = untyped __cpp__('event->cookie');
       var fn = this.wds[wd];
       if (fn != null) {
         try {
-          fn(flags, name);
+          fn(flags, name, cookie);
         }
         catch(e:Dynamic) {
           trace('Error', 'Error while executing callback for $name: $e');

@@ -4,18 +4,19 @@ import geo.UnixDate;
 @:cppFileCode("
 #include <unistd.h>
 #include <string.h>
-#include <errno.h>")
+#include <linux/limits.h>
+#include <errno.h>
+")
 class Utils {
   inline public static function fastNow():UnixDate {
     return untyped __global__.__hxcpp_date_now();
   }
 
-  public static function getPathPart(date:UnixDate, isLocal:Bool) {
+  public static function getPathPart(date:UnixDate) {
     // first normalize
     var normalized = new UnixDate(Math.floor(date.getTime().float() / Globals.FILE_INTERVAL.float()) * Globals.FILE_INTERVAL.float());
     return normalized.withParts(function(year, month, dayMonth, hour, min, sec) {
-      var dir = isLocal ? '_' : '/';
-      return '$year-${month.toInt()}$dir$dayMonth$dir$hour-$min-$sec';
+      return '$year-${month.toInt()}/$dayMonth/$hour-$min-$sec';
     });
   }
 
@@ -35,14 +36,43 @@ class Utils {
     if (err == 0) {
       return;
     }
-    throw ( untyped __cpp__('strerror({0})', err) : cpp.ConstCharStar ).toString();
+    var curErr = err > 0 ? err : untyped __cpp__("errno");
+    throw ( untyped __cpp__('strerror({0})', curErr) : cpp.ConstCharStar ).toString();
   }
 
   public static function checkRetError(err:Int) {
     if (err >= 0) {
       return;
     }
-    throw ( untyped __cpp__('strerror({0})', err) : cpp.ConstCharStar ).toString();
+    throw ( untyped __cpp__('strerror(errno)') : cpp.ConstCharStar ).toString();
+  }
+
+  public static function symlink(src:String, dest:String):Void {
+    var src = cpp.ConstCharStar.fromString(src),
+        dest = cpp.ConstCharStar.fromString(dest);
+    var ret = untyped __cpp__("::symlink({0},{1})", src, dest);
+    checkError(ret);
+  }
+
+  /**
+    Reads a link `src`, and returns where it's pointing to. Returns null if target file is not a linu, but exists
+   **/
+  public static function readlink(src:String):Null<String> {
+    var src = cpp.ConstCharStar.fromString(src);
+
+    var ret:cpp.ConstCharStar = null;
+    untyped __cpp__('char buf[PATH_MAX + 1]');
+    untyped __cpp__('buf[PATH_MAX] = 0');
+    untyped __cpp__('{0} = buf', ret);
+    var num = untyped __cpp__("::readlink({0}, buf, PATH_MAX)", src);
+    if (num < 0) {
+      if (untyped __cpp__("errno == EINVAL")) {
+        return null;
+      }
+      checkRetError(num);
+    }
+    untyped __cpp__('buf[{0}] = 0', num);
+    return ret.toString();
   }
 
   public static function getHostName() {
@@ -52,5 +82,12 @@ class Utils {
     var result:Int = untyped __cpp__('gethostname(buf, 255)');
     checkError(result);
     return str.toString();
+  }
+
+  public static function truncate(path:String, length:Int) {
+    var path = cpp.ConstCharStar.fromString(path);
+
+    var ret = untyped __cpp__("::truncate({0}, {1})", path, length);
+    checkError(ret);
   }
 }

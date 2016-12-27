@@ -1,6 +1,7 @@
 package rtop;
 import geo.UnixDate;
 import geo.units.Seconds;
+import rtop.utils.Glob;
 import rtop.utils.Utils;
 import rtop.utils.Watcher;
 import sys.FileSystem.*;
@@ -76,9 +77,21 @@ class Agent extends mcli.CommandLine {
    **/
   public var timeout:Float = 60;
 
+  /**
+    Maximum amount of KB a single log can generate before getting capped. Set to -1 to disable cap
+   **/
+  public var maxSingleLogKB:Float = 1024; // 1MB
+
+  /**
+    The log buffer size - 4KB by default
+   **/
+  public var bufSize:Int = 1024 * 4;
+
   var m_toUpload:Deque<{ name:String, final:Bool, compress:Bool }> = new Deque();
-  var m_logPaths:Array<{ path:String, ?pattern:EReg }> = [];
+  @:allow(rtop.LogWatcher)
+  var m_logPaths:Array<{ path:String, ?pattern:Glob }> = [];
   var m_extraRsyncArgs:Array<String> = [];
+  var m_closing:Deque<Int> = new Deque();
 
   /**
     Adds a log dir to be synchronized. If `dir` has a colon, the second part of the string will be a pattern (regex)
@@ -86,10 +99,15 @@ class Agent extends mcli.CommandLine {
   public function logPath(path:String) {
     var split = path.split(':');
     if (split.length > 1) {
-      m_logPaths.push({ path:split[0], pattern:new EReg(split.slice(1).join(':'), '') });
+      m_logPaths.push({ path:Glob.normalizePath(split[0]), pattern:new Glob(split.slice(1).join(':'), [NoDot, Posix]) });
     } else {
-      m_logPaths.push({ path:path });
+      m_logPaths.push({ path:Glob.normalizePath(path) });
     }
+  }
+
+  @:skip public function waitClose() {
+    var ret = m_closing.pop(true);
+    m_closing.push(ret);
   }
 
   /**
@@ -116,9 +134,9 @@ class Agent extends mcli.CommandLine {
         createDirectory('$dataDir/$hostname/$dir');
       }
     }
-    create('current'); // current working data
-    create('sent');
-    // create('');
+    create('data'); // current working data
+    create('current');
+    create('config');
     // first check if we have data on our current folder that needs to be sent
     if (this.uploadTarget != null) {
       this.startUploading();
@@ -128,48 +146,83 @@ class Agent extends mcli.CommandLine {
       this.startWatchingLogs();
     }
 
-    while(true) {
+    while(!isClosing()) {
       Sys.sleep(100);
     }
   }
 
-  private function startWatchingLogs() {
-    cpp.vm.Thread.create(function() {
-      var watcher = new rtop.utils.Watcher();
-      for (path in m_logPaths) {
-        watcher.add(path.path, Modify | MovedFrom | Delete | DeleteSelf, function(flags, name) {
-          trace(path);
-          trace(flags);
-          trace(name);
-          trace(flags.hasAny(Modify));
-        });
-      }
+  @:skip inline public function isClosing() {
+    var ret = m_closing.pop(false);
+    if (ret != null) {
+      m_closing.push(ret);
+      return true;
+    } else {
+      return false;
+    }
+  }
 
-      while(true) {
-        watcher.waitOnce();
+  private function startWatchingLogs() {
+    createThread(function() {
+      var w = new LogWatcher(this);
+      w.init();
+      w.loop();
+    });
+  }
+
+  private function createThread(fn:Void->Void) {
+    cpp.vm.Thread.create(function() {
+      try {
+        fn();
+        m_closing.add(0);
+      }
+      catch(e:Dynamic) {
+        Sys.stderr().writeString('Error on thread: $e\n${haxe.CallStack.toString(haxe.CallStack.exceptionStack())}\n');
+        m_closing.push(1);
       }
     });
   }
 
   private function startUploading() {
     // first check which files we need to upload
-    var cur = Utils.getPathPart( Utils.fastNow(), true );
+    var cur = Utils.getPathPart( Utils.fastNow() );
     for (file in readDirectory('$dataDir/$hostname/current')) {
       // check if we should compress
       var path = '$dataDir/$hostname/current/$file';
-      if (isDirectory(path)) {
-        return;
-      }
-      var compress = stat(path).size >= Globals.COMPRESS_SIZE_THRESHOLD;
+      try {
+        var targetPath = Utils.readlink(path);
+        if (targetPath == null) {
+          continue;
+        }
 
-      if (file.startsWith(cur)) {
-        m_toUpload.add({ name:file, final:false, compress:compress });
-      } else {
-        m_toUpload.add({ name:file, final:true, compress:compress });
+        if (isDirectory(targetPath)) {
+          return;
+        }
+        targetPath = sys.FileSystem.absolutePath(targetPath);
+        var dataPath = sys.FileSystem.absolutePath('$dataDir/$hostname/data');
+        if (!targetPath.startsWith(dataPath)) {
+          trace('Warning', 'File $path is in current path but it does not point to a data path');
+          continue;
+        }
+        var name = targetPath.substr(dataPath.length);
+        while (name.charCodeAt(0) == '/'.code) {
+          name = name.substr(1);
+        }
+
+        var compress = stat(targetPath).size >= Globals.COMPRESS_SIZE_THRESHOLD;
+
+        if (name.startsWith(cur)) {
+          m_toUpload.add({ name:name, final:false, compress:compress });
+        } else {
+          trace('$name does not start with $cur');
+          m_toUpload.add({ name:name, final:true, compress:compress });
+        }
+      }
+      catch(e:Dynamic) {
+        trace('Error', 'Error while checking path $path: $e');
       }
     }
 
-    cpp.vm.Thread.create(function() {
+    createThread(function() {
       var toUpload = m_toUpload,
           rsync = this.rsyncPath,
           compress = !this.skipCompression,
@@ -179,7 +232,7 @@ class Agent extends mcli.CommandLine {
           timeout = this.timeout,
           uploadInterval = this.uploadIntervalSecs;
       var lastFiles = new List<{ name:String, expiration:UnixDate }>();
-      while(true) {
+      while(!isClosing()) {
         var cur = toUpload.pop(true);
         var now = Utils.fastNow();
         while (lastFiles.last() != null && lastFiles.last().expiration >= now) {
@@ -194,7 +247,8 @@ class Agent extends mcli.CommandLine {
           trace('Error', 'ignoring $cur: contains special characters');
           continue;
         }
-        if (!exists('$dataDir/$hostname/current/${cur.name}')) {
+        if (!exists('$dataDir/$hostname/data/${cur.name}')) {
+          trace('want to upload ${cur.name}, but it does not exist');
           // file already sent, exit
           continue;
         }
@@ -221,8 +275,8 @@ class Agent extends mcli.CommandLine {
           args.push('--timeout=$timeout');
         }
         if (cur.final) {
-          // checksum
-          args.push('-c');
+          // verify the final version
+          args.push('--append-verify');
         } else {
           // we are sending an append-only file
           args.push('--append');
@@ -232,7 +286,7 @@ class Agent extends mcli.CommandLine {
         if (extraArgs.length > 0) {
           args = args.concat(extraArgs);
         }
-        args.push('$dataDir/./$hostname/current/${cur.name}');
+        args.push('$dataDir/./$hostname/data/${cur.name}');
         args.push(uploadTarget);
 
         var res = Sys.command(rsync, args);
@@ -246,9 +300,9 @@ class Agent extends mcli.CommandLine {
         }
         if (cur.final) {
           try {
-            rename('$dataDir/$hostname/current/${cur.name}', '$dataDir/$hostname/sent/${cur.name}');
+            deleteFile('$dataDir/$hostname/current/${cur.name.replace('/','_')}');
           } catch(e:Dynamic) {
-            trace('Error', 'Error while renaming to sent: $e');
+            trace('Error', 'Error while deleting current ${cur.name}: $e');
             toUpload.add(cur);
           }
           continue;
@@ -260,5 +314,31 @@ class Agent extends mcli.CommandLine {
 
   static function main() {
     new mcli.Dispatch(Sys.args()).dispatch(new Agent());
+  }
+
+  @:skip public function createFileFromPart(part:String, suffix:String) {
+    var path = '$dataDir/$hostname/data/$part$suffix';
+    if (!exists(haxe.io.Path.directory(path))) {
+      createDirectory(haxe.io.Path.directory(path));
+    }
+
+    var ret = sys.io.File.append(path, true);
+    try {
+      var target = '$dataDir/$hostname/current/${part.replace('/','_')}$suffix';
+      if (!exists(target)) {
+        Utils.symlink(path, target);
+      }
+    } catch(e:Dynamic) {
+      trace('Error', 'Symlink failed: $e');
+      ret.close();
+      throw e;
+    }
+
+    return ret;
+  }
+
+  @:skip public function uploadFinalFile(name:String, compress:Bool) {
+    trace('uploadFinalFile $name');
+    m_toUpload.add({ name:name, final:true, compress:compress });
   }
 }

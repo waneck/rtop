@@ -5,3 +5,4 @@
 
 -lib mcli
 -lib geotools
+-lib tink_json
