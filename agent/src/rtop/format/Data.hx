@@ -23,6 +23,7 @@ typedef Data = {
 
 typedef OutBeat = {
   public var date:UnixDate;
+  public var upTime:Seconds;
   @:optional public var processes:Array<OutProcesses>;
   @:optional public var net:Array<OutNet>;
   @:optional public var disks:Array<OutDisk>;

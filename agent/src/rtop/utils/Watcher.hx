@@ -8,12 +8,10 @@ package rtop.utils;
 #define BUF_LEN (10 * (sizeof(struct inotify_event) + NAME_MAX + 1))
 ")
 class Watcher {
-
   var fd:Int;
   var wds:Map<Int, WatchFlags->String->Int->Void>;
 
   public function new() {
-
     this.fd = untyped __cpp__("inotify_init()");
     Utils.checkRetError(this.fd);
     this.wds = new Map();

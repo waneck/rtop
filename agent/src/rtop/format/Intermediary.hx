@@ -1,6 +1,7 @@
 package rtop.format;
 import geo.UnixDate;
-import haxe.Int64;
+import geo.units.Seconds;
+import cpp.Int64;
 
 @:structInit
 class Header {
@@ -14,24 +15,28 @@ class Header {
    **/
   public var dataOffset:Int;
   public var beatSize:Int;
+  public var beatSecs:Seconds;
 
   /**
     The start time where this file started
    **/
   public var startTime:UnixDate;
-  /**
-    The end time where this file ended. Can be 0 if the file still hasn't ended
-   **/
-  public var endTime:UnixDate;
 
   public var net:Array<String>;
-  public var disks:Array<{ path:String, size:Int64 }>;
+  public var disks:Array<IoDiskData>;
+  public var diskIsDetailed:Bool;
 
   public var totalMemoryBytes:Int64;
   public var totalSwapBytes:Int64;
 
   public var os:OSString;
   public var uname:String;
+}
+
+@:structInit
+class DiskData {
+  public var path:String;
+  public var size:Int64;
 }
 
 @:enum abstract OSString(String) {
@@ -41,11 +46,8 @@ class Header {
 
 @:structInit
 class Beat {
-  public var processOffset:Int;
-  public var processLen:Int;
-
-  public var logOffset:Int;
-  public var logSize:Int;
+  public var time:UnixDate;
+  public var upTime:Seconds;
 
   public var net:Array<IoData>;
   public var disks:Array<DiskData>;
@@ -57,30 +59,39 @@ class Beat {
   public var cpuSystem:Int; // int16
   public var cpuStolen:Int; // int16
   public var cpuIOWait:Int; // int16
+
+  public var processOffset:Int;
+  public var processLen:Int;
+
+  public var logOffset:Int;
+  public var logSize:Int;
+
 }
 
 @:structInit
 class IoData {
-  public var readBytes:Int;
-  public var writeBytes:Int;
+  public var read:Int;
+  public var write:Int;
   public var deltaTimeMS:Int;
 }
 
 @:structInit
-class DiskData extends IoData {
+class IoDiskData extends IoData {
   public var freeSpaceBytes:Int64;
+  public var readTicksMS:Int;
+  public var writeTicksMS:Int;
 }
 
 @:structInit
 class ProcessesData {
-  public var stamp:UnixDate;
+  public var upTime:Seconds;
   public var maxCpuAmount:Int64;
   public var namesAndOwners:Array<NameAndOwner>;
   public var processesData:Array<ProcessData>;
 }
 
 @:structInit
-class NameAndOffset {
+class NameAndOwner {
   public var name:String;
   public var owner:String;
 }
@@ -89,8 +100,8 @@ class NameAndOffset {
 class ProcessData {
   public var cpuAmount:Int64;
   public var memoryBytes:Int64;
-  public var count:UInt8;
-  public var mark:UInt8;
+  public var count:Int; //uint8
+  public var mark:Int; //uint8
 }
 
 @:structInit

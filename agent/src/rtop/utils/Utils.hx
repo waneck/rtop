@@ -1,15 +1,26 @@
 package rtop.utils;
 import geo.UnixDate;
+import geo.units.Seconds;
+import sys.FileSystem.*;
 
 @:cppFileCode("
 #include <unistd.h>
 #include <string.h>
 #include <linux/limits.h>
 #include <errno.h>
+#include <time.h>
 ")
 class Utils {
   inline public static function fastNow():UnixDate {
     return untyped __global__.__hxcpp_date_now();
+  }
+
+  public static function getUptime():Seconds {
+    untyped __cpp__("struct timespec tp");
+    var res = untyped __cpp__("clock_gettime(CLOCK_MONOTONIC, &tp)");
+    checkError(res);
+    var secs:Float = untyped __cpp__("((double) tp.tv_sec) + (((double) tp.tv_nsec) / 1000000000.0)");
+    return secs;
   }
 
   public static function getPathPart(date:UnixDate) {
@@ -89,5 +100,12 @@ class Utils {
 
     var ret = untyped __cpp__("::truncate({0}, {1})", path, length);
     checkError(ret);
+  }
+
+  public static function getSysfsContents(path:String):String {
+    var file = sys.io.File.read(path, true);
+    var ret = file.readAll().toString();
+    file.close();
+    return ret;
   }
 }

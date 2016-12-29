@@ -8,27 +8,27 @@ import sys.FileSystem.*;
 using StringTools;
 
 class LogWatcher {
-  var m_agent:Agent;
-  var m_watcher:Watcher;
-  var m_registry:Map<String, LiveData>;
-  var m_enabled:Bool;
-  var m_buf:haxe.io.Bytes;
-  var m_outFile:sys.io.FileOutput;
-  var m_outPrefix:String;
+  var agent:Agent;
+  var watcher:Watcher;
+  var registry:Map<String, LiveData>;
+  var enabled:Bool;
+  var buf:haxe.io.Bytes;
+  var outFile:sys.io.FileOutput;
+  var outPrefix:String;
 
   public function new(agent:Agent) {
-    m_agent = agent;
-    m_watcher = new Watcher();
-    m_buf = haxe.io.Bytes.alloc(m_agent.bufSize);
+    this.agent = agent;
+    this.watcher = new Watcher();
+    this.buf = haxe.io.Bytes.alloc(this.agent.bufSize);
     this.loadRegistry();
   }
 
   public function init() {
     // cleanup registry
     var toDelete = [];
-    for (registry in m_registry) {
+    for (registry in this.registry) {
       var found = false;
-      for (logPath in m_agent.m_logPaths) {
+      for (logPath in this.agent.logPaths) {
         if (registry.source.startsWith(logPath.path)) {
           found = true;
           break;
@@ -39,12 +39,12 @@ class LogWatcher {
       }
     }
     for (del in toDelete) {
-      m_registry.remove(del);
+      this.registry.remove(del);
     }
 
     // start watching
     var found = false;
-    for (logPath in m_agent.m_logPaths) {
+    for (logPath in this.agent.logPaths) {
       if (!exists(logPath.path)) {
         trace('Warning', 'Log path ${logPath.path} does not exist. Skipping');
         continue;
@@ -56,7 +56,7 @@ class LogWatcher {
       found = true;
       var wd = 0;
       var path = logPath.path;
-      wd = m_watcher.add(logPath.path, Modify | MovedFrom | MovedTo | Delete | DeleteSelf, function(flags, name, cookie) {
+      wd = this.watcher.add(logPath.path, Modify | MovedFrom | MovedTo | Delete | DeleteSelf, function(flags, name, cookie) {
         if (!isDirectory('$path/$name') && (logPath.pattern == null || logPath.pattern.match(name).exact)) {
           if (flags.hasAny(Modify | MovedTo)) {
             updateFile(Glob.normalizePath('${path}/$name'), flags.hasAny(Delete | MovedFrom));
@@ -66,7 +66,7 @@ class LogWatcher {
         }
 
         if (flags.hasAll(DeleteSelf)) {
-          m_watcher.remove(wd);
+          this.watcher.remove(wd);
         }
       });
 
@@ -80,17 +80,17 @@ class LogWatcher {
     if (found) {
       // watch for new file creation at current
       var wd = 0;
-      wd = m_watcher.add(m_agent.dataDir + '/' + m_agent.hostname + '/current', Create, function(_,_,_) {
+      wd = this.watcher.add(this.agent.dataDir + '/' + this.agent.hostname + '/current', Create, function(_,_,_) {
         trace('new file created');
         this.saveRegistry();
       });
     }
 
-    m_enabled = found;
+    this.enabled = found;
   }
 
   private function updateFile(path:String, reset:Bool) {
-    var reg = m_registry[path];
+    var reg = this.registry[path];
 
     var size = -1;
     var data = reset ? null : try stat(path) catch(e:Dynamic) { trace('Error', 'Stat $path failed: $e'); null; };
@@ -101,7 +101,7 @@ class LogWatcher {
         return;
       }
       // create a new one
-      m_registry[path] = (reg = { source:path, offset:0, inode:data.ino, device:data.dev });
+      this.registry[path] = (reg = { source:path, offset:0, inode:data.ino, device:data.dev });
       size = data.size;
     } else {
       if (data != null) {
@@ -156,14 +156,12 @@ class LogWatcher {
 
     var amount = size - reg.offset,
         isComplete = true;
-    if (m_agent.maxSingleLogKB > 0 && amount > m_agent.maxSingleLogKB * 1024) {
+    if (this.agent.maxSingleLogKB > 0 && amount > this.agent.maxSingleLogKB * 1024) {
       trace('Warning', 'File $path is bigger than maximum single log update. Capping...');
-      amount = Std.int(m_agent.maxSingleLogKB * 1024);
+      amount = Std.int(this.agent.maxSingleLogKB * 1024);
       reg.offset = size - amount;
       isComplete = false;
     }
-
-    trace(amount, reg.offset, size);
 
     if (reg.offset < 0 || size < 0) {
       // overflow
@@ -183,44 +181,44 @@ class LogWatcher {
     var out = null;
     var now = Utils.fastNow();
     var nowPath = Utils.getPathPart(now);
-    trace(nowPath, m_outPrefix);
-    if (m_outPrefix == null) {
-      m_outPrefix = nowPath;
-      m_outFile = m_agent.createFileFromPart(nowPath, '.logs');
-    } else if (nowPath != m_outPrefix) {
-      m_outFile.close();
-      m_outFile = null;
+    if (this.outPrefix == null) {
+      this.outPrefix = nowPath;
+      this.outFile = this.agent.createFileFromPart(nowPath, '.logs');
+    } else if (nowPath != this.outPrefix) {
+      this.outFile.close();
+      this.outFile = null;
       this.saveRegistry();
-      m_agent.uploadFinalFile( m_outPrefix + '.logs', true );
-      m_outPrefix = nowPath;
-      m_outFile = m_agent.createFileFromPart(nowPath, '.logs');
+      this.agent.uploadFinalFile( this.outPrefix + '.logs', true );
+      this.outPrefix = nowPath;
+      this.outFile = this.agent.createFileFromPart(nowPath, '.logs');
     }
 
     // header
-    m_outFile.writeByte(0x75);
-    m_outFile.writeInt32(Std.int(now.float()));
-    m_outFile.writeString(path);
-    m_outFile.writeByte(0);
-    m_outFile.writeInt32(amount + 1);
+    this.outFile.writeInt32(this.outFile.tell());
+    this.outFile.writeInt32(Std.int(now.float()));
+    this.outFile.writeByte(0x1);
+    var pathBytes = haxe.io.Bytes.ofString(path);
+    this.outFile.writeInt32(pathBytes.length + amount + 2);
+    this.outFile.writeString(path);
+    this.outFile.writeByte(0);
 
     reg.file.seek(reg.offset, SeekBegin);
     reg.offset += amount;
     // contents
-    var buf = m_buf;
+    var buf = this.buf;
     while (amount > 0) {
-      trace(path, size, amount);
       var read = reg.file.readBytes(buf, 0, (amount < buf.length ? amount : buf.length));
       var pos = 0;
       while (pos < read) {
-        pos += m_outFile.writeBytes(buf, pos, read - pos);
+        pos += this.outFile.writeBytes(buf, pos, read - pos);
       }
       amount -= read;
     }
-    m_outFile.writeByte(0);
+    this.outFile.writeByte(0);
   }
 
   private function releaseFile(path:String) {
-    var ret = m_registry[path];
+    var ret = this.registry[path];
     if (ret != null) {
       if (ret.file != null) {
         try {
@@ -231,29 +229,78 @@ class LogWatcher {
         }
       }
     }
-    if (!m_registry.remove(path)) {
+    if (!this.registry.remove(path)) {
       trace('Warning', 'Trying to release $path but it is not in registry');
     }
   }
 
+  public static function checkFile(path:String, andFix:Bool):Bool {
+    var file = sys.io.File.read(path, true);
+    var offset = 0,
+        size = stat(path).size,
+        lastOffset = 0;
+    var hasProblem = false;
+    while (offset < size) {
+      var curOffset = file.readInt32();
+      if (curOffset != offset) {
+        hasProblem = true;
+        break;
+      }
+      file.readInt32(); file.readByte();
+      lastOffset = offset;
+      offset = file.readInt32() + file.tell();
+      file.seek(offset, SeekBegin);
+    }
+    if (offset != size) {
+      hasProblem = true;
+    }
+    file.close();
+    if (hasProblem) {
+      trace('Warning', 'Found problem at offset $offset from $path');
+      if (!andFix) {
+        return false;
+      }
+      var write = @:privateAccess new sys.io.FileOutput(cpp.NativeFile.file_open(path,"rb+"));
+      // consider that the rest of the file is corrupt
+      write.seek(lastOffset, SeekBegin);
+      write.writeInt32(lastOffset);
+      write.writeInt32(Std.int(Utils.fastNow().float()));
+      write.writeByte(0x0); // recovery code
+      write.writeInt32(size - write.tell() - 4);
+      write.close();
+      return false;
+    }
+    return true;
+  }
+
   private function loadRegistry() {
-    var path = m_agent.dataDir + '/' + m_agent.hostname + '/config/registry';
-    m_registry = new Map();
+    var path = this.agent.dataDir + '/' + this.agent.hostname + '/config/registry';
+    this.registry = new Map();
     if (exists(path)) {
       try {
         var registry:{ lastPrefix:String, safeBytes:Int, reg:Array<{ source:String, offset:Int, inode:Int, device:Int }> } = haxe.Json.parse(sys.io.File.getContent(path));
         if (registry.lastPrefix != null) {
-          try {
-            Utils.truncate(m_agent.dataDir + '/' + m_agent.hostname + '/data/' + registry.lastPrefix + '.logs', registry.safeBytes);
-          }
-          catch(e:Dynamic) {
-            trace('Error', 'Error truncating last file ${registry.lastPrefix}: $e');
+          var path = this.agent.dataDir + '/' + this.agent.hostname + '/data/' + registry.lastPrefix + '.logs';
+          // check file
+          if (exists(path)) {
+            try {
+              Utils.truncate(path, registry.safeBytes);
+            }
+            catch(e:Dynamic) {
+              trace('Error', 'Error truncating last file ${registry.lastPrefix}: $e');
+            }
+            try {
+              checkFile(path, true);
+            }
+            catch(e:Dynamic) {
+              trace('Error', 'Error while checking/fixing file $path: $e');
+            }
           }
         }
 
         for (data in registry.reg) {
           var src = Glob.normalizePath(data.source);
-          m_registry.set(src, { source:src, offset:data.offset, inode:data.inode, device:data.device });
+          this.registry.set(src, { source:src, offset:data.offset, inode:data.inode, device:data.device });
         }
       }
       catch(e:Dynamic) {
@@ -263,25 +310,25 @@ class LogWatcher {
   }
 
   public function loop() {
-    if (!m_enabled) {
+    if (!this.enabled) {
       trace('Error', 'No enabled log path found');
-      m_agent.waitClose();
+      this.agent.waitClose();
     } else {
-      while(!m_agent.isClosing()) {
-        m_watcher.waitOnce();
+      while(!this.agent.isClosing()) {
+        this.watcher.waitOnce();
       }
     }
   }
 
   private function saveRegistry() {
-    var path = m_agent.dataDir + '/' + m_agent.hostname + '/config/registry';
-    if (m_outFile != null) {
-      m_outFile.flush();
+    var path = this.agent.dataDir + '/' + this.agent.hostname + '/config/registry';
+    if (this.outFile != null) {
+      this.outFile.flush();
     }
     var data = {
-      lastPrefix: m_outPrefix,
-      safeBytes: m_outFile != null ? m_outFile.tell() : 0,
-      reg: [ for (data in m_registry) (data : RegistryData) ]
+      lastPrefix: this.outPrefix,
+      safeBytes: this.outFile != null ? this.outFile.tell() : 0,
+      reg: [ for (data in this.registry) (data : RegistryData) ]
     };
     sys.io.File.saveContent( path,  tink.Json.stringify(data) );
   }

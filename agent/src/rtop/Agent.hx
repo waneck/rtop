@@ -2,6 +2,7 @@ package rtop;
 import geo.UnixDate;
 import geo.units.Seconds;
 import rtop.utils.Glob;
+import rtop.utils.Timer;
 import rtop.utils.Utils;
 import rtop.utils.Watcher;
 import sys.FileSystem.*;
@@ -25,99 +26,102 @@ class Agent extends mcli.CommandLine {
   public var procDir:String = '/proc';
 
   /**
-    The base data dir where the rtopd environment will be setup
+    the base data dir where the rtopd environment will be setup
    **/
   public var dataDir:String = '/tmp/var/lib/rtopd/data';
 
   /**
-    The amount of interval between beats
+    the amount of interval between beats
    **/
   public var beatSecs:Float = 10.0;
 
   /**
-    Since process beats are much larger in size, it is advised to set a ratio
+    since process beats are much larger in size, it is advised to set a ratio
     between normal beats and process beats. Default is 6 - so
     a process beat will happen once every 6 beats
    **/
   public var processBeatRatio:Int = 6;
 
   /**
-    The amount of wait time between uploads
+    the amount of wait time between uploads
    **/
   public var uploadIntervalSecs:Int = 60;
 
   /**
-    The target rsync upload target data dir. If remote, might be in the form of username@host:/path/to/dir.
+    the target rsync upload target data dir. If remote, might be in the form of username@host:/path/to/dir.
     If not set, the agent will not upload the files
    **/
   public var uploadTarget:String;
 
   /**
-    Bandwidth limit (in KB/s)
+    bandwidth limit (in KB/s)
    **/
   public var bwlimit:Float = -1;
 
   /**
-    Path to use rsync
+    path to use rsync
    **/
   public var rsyncPath:String = 'rsync';
 
   /**
-    Never compress a file while sending it over (saves cpu)
+    never compress a file while sending it over (saves cpu)
    **/
   public var skipCompression:Bool = false;
 
   /**
-    The host name used to identify this server
+    the host name used to identify this server
    **/
   public var hostname:String = Utils.getHostName();
 
   /**
-    This timeout in seconds. If 0 or less, no timeout will be set
+    this timeout in seconds. If 0 or less, no timeout will be set
    **/
   public var timeout:Float = 60;
 
   /**
-    Maximum amount of KB a single log can generate before getting capped. Set to -1 to disable cap
+    maximum amount of KB a single log can generate before getting capped. Set to -1 to disable cap
    **/
   public var maxSingleLogKB:Float = 1024; // 1MB
 
   /**
-    The log buffer size - 4KB by default
+    the log buffer size - 4KB by default
    **/
   public var bufSize:Int = 1024 * 4;
 
-  var m_toUpload:Deque<{ name:String, final:Bool, compress:Bool }> = new Deque();
+  var toUpload:Deque<{ name:String, final:Bool, compress:Bool }> = new Deque();
   @:allow(rtop.LogWatcher)
-  var m_logPaths:Array<{ path:String, ?pattern:Glob }> = [];
-  var m_extraRsyncArgs:Array<String> = [];
-  var m_closing:Deque<Int> = new Deque();
+  var logPaths:Array<{ path:String, ?pattern:Glob }> = [];
+  var extraRsyncArgs:Array<String> = [];
+  var closing:Deque<Int> = new Deque();
 
   /**
-    Adds a log dir to be synchronized. If `dir` has a colon, the second part of the string will be a pattern (regex)
+    adds a log dir to be synchronized. If `dir` has a colon, the second part of the string will be a pattern (regex)
    **/
   public function logPath(path:String) {
     var split = path.split(':');
     if (split.length > 1) {
-      m_logPaths.push({ path:Glob.normalizePath(split[0]), pattern:new Glob(split.slice(1).join(':'), [NoDot, Posix]) });
+      this.logPaths.push({ path:Glob.normalizePath(split[0]), pattern:new Glob(split.slice(1).join(':'), [NoDot, Posix]) });
     } else {
-      m_logPaths.push({ path:Glob.normalizePath(path) });
+      this.logPaths.push({ path:Glob.normalizePath(path) });
     }
   }
 
   @:skip public function waitClose() {
-    var ret = m_closing.pop(true);
-    m_closing.push(ret);
+    var ret = this.closing.pop(true);
+    this.closing.push(ret);
   }
 
   /**
-    If extra rsync arguments are needed, set them here
+    if extra rsync arguments are needed, set them here
    **/
   public function rsyncArg(arg:String) {
-    m_extraRsyncArgs.push(arg);
+    this.extraRsyncArgs.push(arg);
   }
 
-  public function runDefault() {
+  /**
+    start processing
+   **/
+  public function start() {
     if (this.processBeatRatio <= 0) {
       trace('ProcessBeatRation must be a non-zero, positive number');
       Sys.exit(1);
@@ -128,13 +132,13 @@ class Agent extends mcli.CommandLine {
     }
 
     trace(this.hostname);
-    trace(m_logPaths);
+    trace(this.logPaths);
     function create(dir:String) {
       if (!exists('$dataDir/$hostname/$dir')) {
         createDirectory('$dataDir/$hostname/$dir');
       }
     }
-    create('data'); // current working data
+    create('data');
     create('current');
     create('config');
     // first check if we have data on our current folder that needs to be sent
@@ -142,19 +146,49 @@ class Agent extends mcli.CommandLine {
       this.startUploading();
     }
 
-    if (m_logPaths.length > 0) {
+    if (this.logPaths.length > 0) {
       this.startWatchingLogs();
     }
 
+    var timer = new Timer(false);
+    timer.set(Std.int(beatSecs), Std.int((beatSecs - Std.int(beatSecs)) * 1000000000.0), false);
+    var timesSinceProcesses = 0,
+        first = true;
+    var lastUpload = 0.0,
+        stats = new Stats(this);
+    stats.init();
     while(!isClosing()) {
-      Sys.sleep(100);
+      var shouldCheckProcesses = first;
+      first = false;
+
+      var times = timer.wait();
+      if (times > 1) {
+        trace('Warning', 'Timer is not keeping up with the interval $beatSecs: $times');
+      }
+      timesSinceProcesses += times;
+      shouldCheckProcesses = shouldCheckProcesses || timesSinceProcesses >= processBeatRatio;
+      if (shouldCheckProcesses) {
+        timesSinceProcesses = 0;
+      }
+      var curTime = Utils.fastNow(),
+          upTime = Utils.getUptime();
+
+      stats.createBeat(curTime, upTime, shouldCheckProcesses);
+
+      if (upTime.float() - lastUpload >= this.uploadIntervalSecs) {
+        var base = Utils.getPathPart(curTime);
+        this.toUpload.add({ name:base + '.beats', final:false, compress:false });
+        this.toUpload.add({ name:base + '.logs', final:false, compress:true });
+        this.toUpload.add({ name:base + '.proc', final:false, compress:false });
+        lastUpload = upTime.float();
+      }
     }
   }
 
   @:skip inline public function isClosing() {
-    var ret = m_closing.pop(false);
+    var ret = this.closing.pop(false);
     if (ret != null) {
-      m_closing.push(ret);
+      this.closing.push(ret);
       return true;
     } else {
       return false;
@@ -173,13 +207,20 @@ class Agent extends mcli.CommandLine {
     cpp.vm.Thread.create(function() {
       try {
         fn();
-        m_closing.add(0);
+        this.closing.add(0);
       }
       catch(e:Dynamic) {
         Sys.stderr().writeString('Error on thread: $e\n${haxe.CallStack.toString(haxe.CallStack.exceptionStack())}\n');
-        m_closing.push(1);
+        this.closing.push(1);
       }
     });
+  }
+
+  /**
+    check and fix the target log file
+   **/
+  public function checkLogs(path:String) {
+    LogWatcher.checkFile(path, true);
   }
 
   private function startUploading() {
@@ -211,10 +252,10 @@ class Agent extends mcli.CommandLine {
         var compress = stat(targetPath).size >= Globals.COMPRESS_SIZE_THRESHOLD;
 
         if (name.startsWith(cur)) {
-          m_toUpload.add({ name:name, final:false, compress:compress });
+          this.toUpload.add({ name:name, final:false, compress:compress });
         } else {
           trace('$name does not start with $cur');
-          m_toUpload.add({ name:name, final:true, compress:compress });
+          this.toUpload.add({ name:name, final:true, compress:compress });
         }
       }
       catch(e:Dynamic) {
@@ -223,10 +264,10 @@ class Agent extends mcli.CommandLine {
     }
 
     createThread(function() {
-      var toUpload = m_toUpload,
+      var toUpload = this.toUpload,
           rsync = this.rsyncPath,
           compress = !this.skipCompression,
-          extraArgs = m_extraRsyncArgs,
+          extraArgs = this.extraRsyncArgs,
           hostname = this.hostname,
           bwlimit = this.bwlimit,
           timeout = this.timeout,
@@ -307,7 +348,7 @@ class Agent extends mcli.CommandLine {
           }
           continue;
         }
-        lastFiles.add({ name:cur.name, expiration: Utils.fastNow() + new Seconds(uploadInterval) });
+        lastFiles.add({ name:cur.name, expiration: Utils.fastNow() + new Seconds(uploadInterval / 2) });
       }
     });
   }
@@ -339,6 +380,6 @@ class Agent extends mcli.CommandLine {
 
   @:skip public function uploadFinalFile(name:String, compress:Bool) {
     trace('uploadFinalFile $name');
-    m_toUpload.add({ name:name, final:true, compress:compress });
+    this.toUpload.add({ name:name, final:true, compress:compress });
   }
 }
