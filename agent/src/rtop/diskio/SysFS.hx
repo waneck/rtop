@@ -17,7 +17,7 @@ class SysFS extends DiskIO {
     var splitRegex = ~/( |\t|\n)+/g;
     for (i in 0...ret.length) {
       try {
-        var name = this.allFs[i].devName,
+        var name = this.disks[i].devName,
             stamp = Utils.getUptime();
         var contents = Utils.getSysfsContents( this.agent.sysdir + '/class/block/$name/stat' );
         var stats = splitRegex.split(contents).map(Std.parseInt);
@@ -50,7 +50,7 @@ class SysFS extends DiskIO {
         lastValue.writeTicks = writeTicks;
       }
       catch(e:Dynamic) {
-        trace('Warning', 'Error while accessing the sysfs data ${this.agent.sysdir}/class/block/${allFs[i].devName}/stat: $e');
+        trace('Warning', 'Error while accessing the sysfs data ${this.agent.sysdir}/class/block/${disks[i].devName}/stat: $e');
       }
     }
     return ret;

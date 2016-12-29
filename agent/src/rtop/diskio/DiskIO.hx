@@ -10,8 +10,8 @@ using StringTools;
 
 class DiskIO {
   public var isDetailed(default, null):Bool;
+  public var disks(default, null):Array<{ fsPath:String, dev:String, devName:String }> = [];
   var agent:Agent;
-  var allFs:Array<{ fsPath:String, dev:String, devName:String }> = [];
 
   function new(agent:Agent) {
     this.agent = agent;
@@ -25,22 +25,23 @@ class DiskIO {
       if (data.fsname.startsWith('/dev/')) {
         var stats = DiskUtils.getFsStats(data.dir);
         disks.push({ path:data.fsname, size: stats.total });
-        this.allFs.push({ fsPath:data.dir, dev:data.fsname, devName:data.fsname.split('/').pop() });
+        this.disks.push({ fsPath:data.dir, dev:data.fsname, devName:data.fsname.split('/').pop() });
       }
     }
-    trace(this.allFs);
+    trace(this.disks);
     return disks;
     update();
   }
 
   public function update():Array<IoDiskData> {
     var ret:Array<IoDiskData> = [];
-    for (fs in this.allFs) {
+    for (fs in this.disks) {
       var cur:IoDiskData = { read:0, write:0, deltaTimeMS:0 };
       try {
         var stats = DiskUtils.getFsStats(fs.fsPath);
         cur.freeSpaceBytes = stats.free;
       } catch(e:Dynamic) {
+        trace('Error', 'fs stats: $e');
       }
       ret.push(cur);
     }
@@ -49,12 +50,9 @@ class DiskIO {
   }
 
   public static function getDiskIO(agent:Agent):DiskIO {
-    trace('here');
     if (exists(agent.sysdir + '/class/block') && isDirectory(agent.sysdir + '/class/block')) {
-      trace('sysfs');
       return new SysFS(agent);
     } else {
-      trace('whaa');
       return new DiskIO(agent);
     }
   }
