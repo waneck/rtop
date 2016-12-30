@@ -23,7 +23,7 @@ class Agent extends mcli.CommandLine {
   /**
     the proc filesystem mount directory
    **/
-  public var procDir:String = '/proc';
+  public var procdir:String = '/proc';
 
   /**
     the base data dir where the rtopd environment will be setup

@@ -18,9 +18,9 @@ class DiskIO {
     this.isDetailed = false;
   }
 
-  public function init():Array<DiskData> {
-    var disks:Array<DiskData> = [];
-    var mountFile = exists('/etc/mtab') ? '/etc/mtab' : agent.procDir + '/mounts';
+  public function init():Array<InitialDiskData> {
+    var disks:Array<InitialDiskData> = [];
+    var mountFile = exists('/etc/mtab') ? '/etc/mtab' : agent.procdir + '/mounts';
     for (data in DiskUtils.getMountData(mountFile)) {
       if (data.fsname.startsWith('/dev/')) {
         var stats = DiskUtils.getFsStats(data.dir);
@@ -33,10 +33,10 @@ class DiskIO {
     update();
   }
 
-  public function update():Array<IoDiskData> {
-    var ret:Array<IoDiskData> = [];
+  public function update():Array<DiskData> {
+    var ret:Array<DiskData> = [];
     for (fs in this.disks) {
-      var cur:IoDiskData = { read:0, write:0, deltaTimeMS:0 };
+      var cur:DiskData = { read:0, write:0, deltaTimeMS:0 };
       try {
         var stats = DiskUtils.getFsStats(fs.fsPath);
         cur.freeSpaceBytes = stats.free;

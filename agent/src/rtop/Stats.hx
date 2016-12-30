@@ -1,44 +1,80 @@
 package rtop;
 import rtop.utils.Utils;
 import rtop.diskio.DiskIO;
+import rtop.format.Intermediary;
 import geo.UnixDate;
 import geo.units.Seconds;
 import haxe.io.Bytes;
 import sys.FileSystem.*;
 
 class Stats {
-  var agent:Agent;
+  public var agent(default, null):Agent;
+  public var disk(default, null):DiskIO;
+  public var net(default, null):Net;
+  public var mem(default, null):Mem;
+  public var cpu(default, null):Cpu;
+  public var processes(default, null):Processes;
 
   var presetHeader:Bytes;
   var timeOffset:Int;
 
-  var disk:DiskIO;
-  var net:Net;
+  var uname:String;
 
   public function new(agent:Agent) {
     this.agent = agent;
     this.disk = DiskIO.getDiskIO(agent);
     this.net = new Net(agent);
+    this.mem = new Mem(agent);
+    this.cpu = new Cpu(agent);
+    this.processes = new Processes(this);
   }
 
   public function init() {
     // get net / disks to count how many we have
-    this.net.init();
-    this.disk.init();
+    this.cpu.init();
+    this.mem.init();
+    this.uname = try Utils.getSysfsContents( this.agent.procdir + '/version' ) catch(e:Dynamic) null;
+    var header:Header = {
+      // dataOffset: 0,
+      // beatSize: 0,
+      // beatSecs: this.agent.beatSecs,
 
-    var header = new haxe.io.BytesOutput();
-    this.timeOffset = 0;
-    header.writeInt32(0xB347B347);
-    this.timeOffset += 4;
+      startTime: Utils.fastNow(),
 
-    header.writeInt16(1); // major version
-    header.writeInt16(0); // major version
-    this.timeOffset += 4;
+      net: this.net.init(),
+      disks: this.disk.init(),
+      diskIsDetailed: this.disk.isDetailed,
+      cpus: this.cpu.nCpu,
+
+      totalMemoryBytes: this.mem.memTotal,
+      totalSwapBytes: this.mem.swapTotal,
+
+      os: Linux,
+      uname: this.uname,
+    };
+
+    // var header = new haxe.io.BytesOutput();
+    // this.timeOffset = 0;
+    // header.writeInt32(0xB347B347);
+    // this.timeOffset += 4;
+    //
+    // header.writeInt16(1); // major version
+    // header.writeInt16(0); // major version
+    // this.timeOffset += 4;
+
+    this.processes.init();
   }
 
   public function createBeat(curTime:UnixDate, upTime:Seconds, alsoProcess:Bool) {
+    var beat = new Beat();
     this.disk.update();
     this.net.update();
+    this.mem.update(beat);
+    this.cpu.update();
+
+    if (alsoProcess) {
+      this.processes.update();
+    }
   }
 }
 

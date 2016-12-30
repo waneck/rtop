@@ -12,7 +12,7 @@ class SysFS extends DiskIO {
     this.isDetailed = true;
   }
 
-  override public function update():Array<IoDiskData> {
+  override public function update():Array<DiskData> {
     var ret = super.update();
     var splitRegex = ~/( |\t|\n)+/g;
     for (i in 0...ret.length) {
